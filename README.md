@@ -44,3 +44,9 @@ pyinstaller --noconsole --onefile --name "MergeOrders" merge_excel_app.py
 ```
 python3 -m PyInstaller --noconsole --onefile --name "MergeOrders" --collect-all pandas --collect-all openpyxl --collect-all xlrd merge_excel_app.py
 ```
+
+качваш в GitHub
+
+пускаш workflow (Actions → Build Windows EXE → Run)
+
+сваляш MergeOrders.exe от “Artifacts”
