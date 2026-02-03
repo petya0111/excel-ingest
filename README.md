@@ -16,6 +16,10 @@
 
 * записва готов .xlsx (Save As)
 
+```
+python3 merge_excel_app.py    
+```
+
 macOS / Linux
 ```
 python3 -m venv .venv
