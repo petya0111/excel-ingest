@@ -619,8 +619,8 @@ def append_to_protocol(protocol_key: str, df_rows: pd.DataFrame, source_filename
     ensure_dirs()
     prot_xlsx = PROTOCOLS_DIR / f"{protocol_key}.xlsx"
     
-    # Check if protocol is closed (read-only)
-    if is_file_readonly(prot_xlsx):
+    # Check if protocol is closed (read-only or _CLOSED in name)
+    if "_CLOSED" in protocol_key or is_file_readonly(prot_xlsx):
         raise RuntimeError(f"Протокол {protocol_key} е приключен. Нови редове не могат да се добавят.")
 
     cols = ["Артикул", "Размер", "Бройки", "Ед. Цена", "Сума", "Номер на поръчка и ред", "Дата на доставка", "Технологичен лист", "Материал"]
@@ -633,7 +633,16 @@ def append_to_protocol(protocol_key: str, df_rows: pd.DataFrame, source_filename
     if prot_xlsx.exists():
         try:
             existing = pd.read_excel(prot_xlsx, engine="openpyxl")
-            new_all = pd.concat([existing, out], ignore_index=True)
+            
+            # Remove duplicates: if "Номер на поръчка и ред" already exists, replace with new data
+            if "Номер на поръчка и ред" in existing.columns and "Номер на поръчка и ред" in out.columns:
+                # Get the order refs from new data
+                new_refs = set(out["Номер на поръчка и ред"].dropna().astype(str).tolist())
+                # Keep only rows from existing that are NOT in new data
+                existing_filtered = existing[~existing["Номер на поръчка и ред"].astype(str).isin(new_refs)]
+                new_all = pd.concat([existing_filtered, out], ignore_index=True)
+            else:
+                new_all = pd.concat([existing, out], ignore_index=True)
         except Exception:
             new_all = out
     else:
@@ -679,33 +688,31 @@ class App(tk.Tk):
         btn_prices = ttk.Button(top, text="Качи Цени (.xls/.xlsx)", command=self.pick_prices)
         btn_merge = ttk.Button(top, text="Слей", command=self.do_merge)
         btn_save = ttk.Button(top, text="Запази .xlsx", command=self.save_xlsx)
-        btn_batch = ttk.Button(top, text="Качи много поръчки", command=self.batch_process)
-        btn_choose_protocols = ttk.Button(top, text="Избери папка за протоколи", command=self.choose_protocols_folder)
 
         self.search_var = tk.StringVar(value="")
         self.search_entry = ttk.Entry(top, textvariable=self.search_var, width=30)
         btn_search = ttk.Button(top, text="Търси", command=self.on_search)
 
-        # Row 1 buttons
+        # Row 1 buttons - single order processing
         btn_order.grid(row=0, column=0, padx=5, pady=5, sticky="w")
         btn_prices.grid(row=0, column=1, padx=5, pady=5, sticky="w")
         btn_merge.grid(row=0, column=2, padx=5, pady=5, sticky="w")
         btn_save.grid(row=0, column=3, padx=5, pady=5, sticky="w")
-        btn_batch.grid(row=0, column=4, padx=5, pady=5, sticky="w")
-        btn_choose_protocols.grid(row=0, column=5, padx=5, pady=5, sticky="w")
-        self.search_entry.grid(row=0, column=6, padx=5, pady=5, sticky="w")
-        btn_search.grid(row=0, column=7, padx=5, pady=5, sticky="w")
+        self.search_entry.grid(row=0, column=4, padx=5, pady=5, sticky="w")
+        btn_search.grid(row=0, column=5, padx=5, pady=5, sticky="w")
 
         # Row 2 - protocol management buttons
+        btn_choose_protocols = ttk.Button(top, text="Избери папка за протоколи", command=self.choose_protocols_folder)
+        btn_batch = ttk.Button(top, text="Качи много поръчки", command=self.batch_process)
         btn_view_protocols = ttk.Button(top, text="Преглед протоколи", command=self.view_protocols)
         btn_close_protocol = ttk.Button(top, text="Приключи протокол", command=self.close_protocol)
         btn_reopen_protocol = ttk.Button(top, text="Отвори протокол", command=self.reopen_protocol)
-        btn_search_all = ttk.Button(top, text="Търси навсякъде", command=self.search_all)
         
-        btn_view_protocols.grid(row=1, column=0, padx=5, pady=2, sticky="w")
-        btn_close_protocol.grid(row=1, column=1, padx=5, pady=2, sticky="w")
-        btn_reopen_protocol.grid(row=1, column=2, padx=5, pady=2, sticky="w")
-        btn_search_all.grid(row=1, column=3, padx=5, pady=2, sticky="w")
+        btn_choose_protocols.grid(row=1, column=0, padx=5, pady=2, sticky="w")
+        btn_batch.grid(row=1, column=1, padx=5, pady=2, sticky="w")
+        btn_view_protocols.grid(row=1, column=2, padx=5, pady=2, sticky="w")
+        btn_close_protocol.grid(row=1, column=3, padx=5, pady=2, sticky="w")
+        btn_reopen_protocol.grid(row=1, column=4, padx=5, pady=2, sticky="w")
 
         ttk.Label(top, text="Поръчка:").grid(row=2, column=0, sticky="w")
         ttk.Label(top, textvariable=self.order_path).grid(row=2, column=1, columnspan=6, sticky="w")
@@ -736,7 +743,7 @@ class App(tk.Tk):
     def pick_order(self):
         path = filedialog.askopenfilename(
             title="Избери файл Поръчка",
-            filetypes=[("Excel files", "*.xls *.xlsx"), ("All files", "*.*")]
+            filetypes=[("Excel", "*.xlsx"), ("Excel 97-2003", "*.xls"), ("All files", "*.*")]
         )
         if path:
             self.order_path.set(path)
@@ -744,7 +751,7 @@ class App(tk.Tk):
     def pick_prices(self):
         path = filedialog.askopenfilename(
             title="Избери файл Цени",
-            filetypes=[("Excel files", "*.xls *.xlsx"), ("All files", "*.*")]
+            filetypes=[("Excel", "*.xlsx"), ("Excel 97-2003", "*.xls"), ("All files", "*.*")]
         )
         if path:
             self.prices_path.set(path)
@@ -933,101 +940,129 @@ class App(tk.Tk):
         
         ttk.Button(popup, text="Отвори", command=do_reopen).pack(pady=10)
 
-    def search_all(self):
-        """Search in all protocols."""
-        q = (self.search_var.get() or "").strip()
-        if not q:
-            messagebox.showinfo("Търсене", "Въведи текст за търсене (име, ТЛ или размер).")
-            return
-        ql = q.lower()
-        
-        def match_row(r):
-            for c in ["Артикул", "Технологичен лист", "Размер"]:
-                try:
-                    v = str(r.get(c, "") or "").lower()
-                except Exception:
-                    v = ""
-                if ql in v:
-                    return True
-            return False
-        
-        frames = []
-        
-        # Search in protocols
-        if self.protocols_dir_var.get() != "(не е избрана)" and PROTOCOLS_DIR is not None:
-            for p in PROTOCOLS_DIR.glob("protocol_*.xlsx"):
-                try:
-                    df = pd.read_excel(p, engine="openpyxl")
-                    df["_Източник"] = f"Протокол: {p.name}"
-                    frames.append(df)
-                except Exception:
-                    continue
-        
-        if not frames:
-            messagebox.showinfo("Няма данни", "Няма записани поръчки или протоколи за търсене.")
-            return
-        
-        all_df = pd.concat(frames, ignore_index=True)
-        filtered = all_df[all_df.apply(match_row, axis=1)]
-        
-        if filtered.empty:
-            messagebox.showinfo("Резултат", f"Няма резултати за '{q}'.")
-            return
-        
-        # Reorder columns to show source first
-        cols = list(filtered.columns)
-        if "_Източник" in cols:
-            cols.remove("_Източник")
-            cols = ["_Източник"] + cols
-            filtered = filtered[cols]
-        
-        self.df_merged = filtered
-        self._load_table(filtered)
-        self.status.set(f"Намерени {len(filtered)} реда за '{q}' (в протоколи).")
-
     def batch_process(self):
         """Process multiple order files at once and add them to weekly protocols."""
-        pp = self.prices_path.get().strip()
-        if not pp:
-            messagebox.showwarning("Липсва файл", "Първо избери файл с Цени.")
-            return
-        
         if self.protocols_dir_var.get() == "(не е избрана)" or PROTOCOLS_DIR is None:
             messagebox.showwarning("Папка за протоколи", "Първо избери папка за протоколи.")
             return
         
-        # Allow multiple file selection
-        order_files = filedialog.askopenfilenames(
-            title="Избери поръчки за обработка",
-            filetypes=[("Excel files", "*.xls *.xlsx"), ("All files", "*.*")]
-        )
+        # Create window
+        popup = tk.Toplevel(self)
+        popup.title("Качи много поръчки")
+        popup.geometry("600x500")
+        popup.transient(self)
         
-        if not order_files:
-            return
+        order_files = []
         
+        # Title
+        ttk.Label(popup, text="Качи поръчки към протоколи", font=("", 14, "bold")).pack(pady=(15, 10))
+        
+        # Add files button - PROMINENT at top
+        def add_files_dialog():
+            paths = filedialog.askopenfilenames(
+                title="Избери поръчки",
+                filetypes=[("Excel", "*.xlsx"), ("Excel 97-2003", "*.xls"), ("All files", "*.*")]
+            )
+            if paths:
+                for p in paths:
+                    p_str = str(p).strip()
+                    if p_str.lower().endswith(('.xls', '.xlsx')) and p_str not in order_files:
+                        order_files.append(p_str)
+                        files_listbox.insert(tk.END, Path(p_str).name)
+                update_label()
+        
+        add_btn = ttk.Button(popup, text="📂 Добави файлове...", command=add_files_dialog)
+        add_btn.pack(pady=10)
+        
+        # Files list label
+        ttk.Label(popup, text="Добавени поръчки:").pack(anchor="w", padx=20)
+        
+        # Listbox for files
+        list_frame = ttk.Frame(popup)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+        
+        files_listbox = tk.Listbox(list_frame, selectmode=tk.EXTENDED, height=12)
+        files_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=files_listbox.yview)
+        files_listbox.configure(yscrollcommand=files_scrollbar.set)
+        
+        files_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        files_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Status label
+        status_label = ttk.Label(popup, text="Няма добавени файлове", foreground="gray")
+        status_label.pack(pady=5)
+        
+        def update_label():
+            if order_files:
+                status_label.configure(text=f"{len(order_files)} файла добавени", foreground="green")
+            else:
+                status_label.configure(text="Няма добавени файлове", foreground="gray")
+        
+        # Action buttons
+        btn_frame = ttk.Frame(popup)
+        btn_frame.pack(fill=tk.X, padx=20, pady=5)
+        
+        def remove_selected():
+            selected = list(files_listbox.curselection())
+            for i in reversed(selected):
+                files_listbox.delete(i)
+                del order_files[i]
+            update_label()
+        
+        def clear_all():
+            files_listbox.delete(0, tk.END)
+            order_files.clear()
+            update_label()
+        
+        ttk.Button(btn_frame, text="Премахни избраните", command=remove_selected).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Изчисти всички", command=clear_all).pack(side=tk.LEFT, padx=5)
+        
+        # Separator and bottom buttons
+        ttk.Separator(popup, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=20, pady=10)
+        
+        bottom_frame = ttk.Frame(popup)
+        bottom_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        def do_process():
+            if not order_files:
+                messagebox.showwarning("Липсват файлове", "Добави поне една поръчка.")
+                return
+            popup.destroy()
+            self._process_batch_files(order_files)
+        
+        ttk.Button(bottom_frame, text="Отказ", command=popup.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(bottom_frame, text="Обработи", command=do_process).pack(side=tk.RIGHT, padx=5)
+
+    def _process_batch_files(self, order_files):
+        """Process the batch of order files (already contain prices)."""
         processed = 0
         errors = []
         all_merged = []
         
+        # Expected columns in protocol
+        protocol_cols = ["Артикул", "Размер", "Бройки", "Ед. Цена", "Сума", 
+                         "Номер на поръчка и ред", "Дата на доставка", "Технологичен лист", "Материал"]
+        
         for order_path in order_files:
             try:
-                # Merge order with prices
-                df_merged = merge_order_and_prices(order_path, pp)
+                # Read the order file directly (it already has all data including prices)
+                df = read_excel_any(order_path)
                 
-                if df_merged.empty:
+                if df.empty:
                     continue
                 
-                # Get order name from the data
-                try:
-                    first_ref = str(df_merged.iloc[0]["Номер на поръчка и ред"])
-                    order_no = first_ref.split("-")[0]
-                except Exception:
-                    order_no = Path(order_path).stem
+                # Get order name from filename
+                order_no = Path(order_path).stem
+                
+                # Ensure all protocol columns exist
+                for col in protocol_cols:
+                    if col not in df.columns:
+                        df[col] = ""
                 
                 # Group by week and append to protocols
                 ensure_dirs()
                 groups = {}
-                for _, row in df_merged.iterrows():
+                for _, row in df.iterrows():
                     wk = week_key_from_date(row.get("Дата на доставка"))
                     groups.setdefault(wk, []).append(row.to_dict())
                 
@@ -1040,7 +1075,7 @@ class App(tk.Tk):
                         errors.append(f"{order_no}: {e}")
                 
                 processed += 1
-                all_merged.append(df_merged)
+                all_merged.append(df)
                 
             except Exception as e:
                 errors.append(f"{Path(order_path).name}: {e}")
