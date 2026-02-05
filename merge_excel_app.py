@@ -1043,18 +1043,90 @@ class App(tk.Tk):
         protocol_cols = ["Артикул", "Размер", "Бройки", "Ед. Цена", "Сума", 
                          "Номер на поръчка и ред", "Дата на доставка", "Технологичен лист", "Материал"]
         
+        # Column name mappings (various formats -> standard format)
+        col_mappings = {
+            # Артикул
+            "артикул": "Артикул",
+            "item": "Артикул",
+            "item number": "Артикул",
+            "име на артикул": "Артикул",
+            "продукт": "Артикул",
+            # Размер
+            "размер": "Размер",
+            "size": "Размер",
+            # Бройки
+            "бройки": "Бройки",
+            "брой": "Бройки",
+            "qty": "Бройки",
+            "quantity": "Бройки",
+            "количество": "Бройки",
+            # Ед. Цена
+            "ед. цена": "Ед. Цена",
+            "ед цена": "Ед. Цена",
+            "единична цена": "Ед. Цена",
+            "unit price": "Ед. Цена",
+            "цена": "Ед. Цена",
+            # Сума
+            "сума": "Сума",
+            "total": "Сума",
+            "amount": "Сума",
+            "обща сума": "Сума",
+            # Номер на поръчка и ред
+            "номер на поръчка и ред": "Номер на поръчка и ред",
+            "номер поръчка": "Номер на поръчка и ред",
+            "поръчка": "Номер на поръчка и ред",
+            "order": "Номер на поръчка и ред",
+            "order number": "Номер на поръчка и ред",
+            "purchase order": "Номер на поръчка и ред",
+            # Дата на доставка
+            "дата на доставка": "Дата на доставка",
+            "дата доставка": "Дата на доставка",
+            "дата": "Дата на доставка",
+            "delivery date": "Дата на доставка",
+            "date": "Дата на доставка",
+            # Технологичен лист
+            "технологичен лист": "Технологичен лист",
+            "тл": "Технологичен лист",
+            "tech sheet": "Технологичен лист",
+            # Материал
+            "материал": "Материал",
+            "material": "Материал",
+        }
+        
+        # Required columns - file must have at least these
+        required_cols = ["Артикул", "Бройки"]
+        
         for order_path in order_files:
             try:
                 # Read the order file directly (it already has all data including prices)
                 df = read_excel_any(order_path)
                 
                 if df.empty:
+                    errors.append(f"{Path(order_path).name}: Файлът е празен")
+                    continue
+                
+                # Normalize column names
+                new_columns = {}
+                for col in df.columns:
+                    col_lower = str(col).strip().lower()
+                    if col_lower in col_mappings:
+                        new_columns[col] = col_mappings[col_lower]
+                    elif str(col).strip() in protocol_cols:
+                        new_columns[col] = str(col).strip()
+                
+                if new_columns:
+                    df = df.rename(columns=new_columns)
+                
+                # Check if file has required columns
+                missing_cols = [col for col in required_cols if col not in df.columns]
+                if missing_cols:
+                    errors.append(f"{Path(order_path).name}: Липсват колони: {', '.join(missing_cols)}")
                     continue
                 
                 # Get order name from filename
                 order_no = Path(order_path).stem
                 
-                # Ensure all protocol columns exist
+                # Ensure all protocol columns exist (add missing optional ones as empty)
                 for col in protocol_cols:
                     if col not in df.columns:
                         df[col] = ""
@@ -1139,6 +1211,22 @@ class App(tk.Tk):
             df_to_save = self.df_merged.copy()
             if "Дата на доставка" in df_to_save.columns:
                 df_to_save["Дата на доставка"] = pd.to_datetime(df_to_save["Дата на доставка"], errors="coerce")
+            
+            # Ако файлът съществува, презаписваме дублиращите се редове
+            if Path(out_path).exists():
+                try:
+                    existing = pd.read_excel(out_path, engine="openpyxl")
+                    if "Номер на поръчка и ред" in existing.columns and "Номер на поръчка и ред" in df_to_save.columns:
+                        # Get the order refs from new data
+                        new_refs = set(df_to_save["Номер на поръчка и ред"].dropna().astype(str).tolist())
+                        # Keep only rows from existing that are NOT in new data
+                        existing_filtered = existing[~existing["Номер на поръчка и ред"].astype(str).isin(new_refs)]
+                        df_to_save = pd.concat([existing_filtered, df_to_save], ignore_index=True)
+                        # Convert date again after merge
+                        if "Дата на доставка" in df_to_save.columns:
+                            df_to_save["Дата на доставка"] = pd.to_datetime(df_to_save["Дата на доставка"], errors="coerce")
+                except Exception:
+                    pass  # If can't read existing, just overwrite
             
             with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
                 df_to_save.to_excel(writer, index=False, sheet_name="Porachka")
