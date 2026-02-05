@@ -677,6 +677,7 @@ class App(tk.Tk):
 
         self.df_merged = None
         self._rendered_index_map = []
+        self._current_file_path = None  # Path to currently loaded file for saving
 
         self._build_ui()
 
@@ -687,7 +688,7 @@ class App(tk.Tk):
         btn_order = ttk.Button(top, text="Качи Поръчка (.xls/.xlsx)", command=self.pick_order)
         btn_prices = ttk.Button(top, text="Качи Цени (.xls/.xlsx)", command=self.pick_prices)
         btn_merge = ttk.Button(top, text="Слей", command=self.do_merge)
-        btn_save = ttk.Button(top, text="Запази .xlsx", command=self.save_xlsx)
+        btn_save = ttk.Button(top, text="Запази като...", command=self.save_xlsx)
 
         self.search_var = tk.StringVar(value="")
         self.search_entry = ttk.Entry(top, textvariable=self.search_var, width=30)
@@ -737,6 +738,7 @@ class App(tk.Tk):
 
         self.tree.bind("<Double-1>", self.on_row_double_click)
 
+        # Bottom bar with status
         self.status = tk.StringVar(value="Избери двата файла и натисни 'Слей'.")
         ttk.Label(self, textvariable=self.status, padding=10).pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -823,8 +825,9 @@ class App(tk.Tk):
                 try:
                     df = pd.read_excel(prot_path, engine="openpyxl")
                     self.df_merged = df
+                    self._current_file_path = str(prot_path)  # Remember path for saving
                     self._load_table(df)
-                    self.status.set(f"Заредени {len(df)} реда от {full_name}")
+                    self.status.set(f"Заредени {len(df)} реда от {full_name} (двоен клик за редакция)")
                     popup.destroy()
                 except Exception as e:
                     messagebox.showerror("Грешка", f"Не мога да отворя протокола: {e}")
@@ -1178,6 +1181,7 @@ class App(tk.Tk):
 
         try:
             self.df_merged = merge_order_and_prices(op, pp)
+            self._current_file_path = None  # New merge, no file yet
             self._load_table(self.df_merged)
             self.status.set(f"Готово: {len(self.df_merged)} реда слети.")
         except Exception as e:
@@ -1404,7 +1408,35 @@ class App(tk.Tk):
 
             edit.destroy()
             self._load_table(self.df_merged)
-            self.status.set("Редът е променен. Запиши, за да го запазиш в файл.")
+            
+            # Auto-save to file if we have a current file path
+            if self._current_file_path:
+                try:
+                    out_path = self._current_file_path
+                    
+                    # Check if file is read-only (closed protocol)
+                    if is_file_readonly(Path(out_path)):
+                        self.status.set("⚠️ Файлът е защитен - промените не са запазени.")
+                        return
+                    
+                    # Save to file
+                    df_to_save = self.df_merged.copy()
+                    if "Дата на доставка" in df_to_save.columns:
+                        df_to_save["Дата на доставка"] = pd.to_datetime(df_to_save["Дата на доставка"], errors="coerce")
+                    
+                    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+                        df_to_save.to_excel(writer, index=False, sheet_name="Sheet1")
+                    
+                    try:
+                        _apply_date_format_xlsx(out_path, header_name="Дата на доставка")
+                    except Exception:
+                        pass
+                    
+                    self.status.set(f"✅ Запазено в {Path(out_path).name}")
+                except Exception as e:
+                    self.status.set(f"⚠️ Грешка при запис: {e}")
+            else:
+                self.status.set("Редът е променен (използвай 'Запази като...' за да запишеш)")
 
         btn_save = ttk.Button(edit, text="Запиши", command=save_edit)
         btn_save.grid(row=len(columns), column=0, columnspan=2, pady=6)
