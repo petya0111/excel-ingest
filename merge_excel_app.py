@@ -355,9 +355,20 @@ def read_excel_any(path: str) -> pd.DataFrame:
         raise RuntimeError(f"Не успях да прочета файла: {path}\nГрешка: {e}")
 
 
-def merge_order_and_prices(order_path: str, prices_path: str) -> pd.DataFrame:
+def merge_order_and_prices(order_path: str, prices_path_or_df) -> pd.DataFrame:
+    """Merge order with prices.
+    
+    Args:
+        order_path: Path to the order Excel file
+        prices_path_or_df: Either a path to a prices Excel file, or a DataFrame with prices
+    """
     df_order = read_excel_any(order_path)
-    df_prices = read_excel_any(prices_path)
+    
+    # Accept either path or DataFrame for prices
+    if isinstance(prices_path_or_df, pd.DataFrame):
+        df_prices = prices_path_or_df
+    else:
+        df_prices = read_excel_any(prices_path_or_df)
 
     DEBUG = os.environ.get("MERGE_DEBUG", "0") in ("1", "true", "True")
     if DEBUG:
@@ -738,6 +749,7 @@ class App(tk.Tk):
         self.df_merged = None
         self._rendered_index_map = []
         self._current_file_path = None  # Path to currently loaded file for saving
+        self._multiple_prices_paths = []  # List of multiple price files
 
         self._build_ui()
 
@@ -746,7 +758,7 @@ class App(tk.Tk):
         top.pack(side=tk.TOP, fill=tk.X)
 
         btn_order = ttk.Button(top, text="Качи Поръчка (.xls/.xlsx)", command=self.pick_order)
-        btn_prices = ttk.Button(top, text="Качи Цени (.xls/.xlsx)", command=self.pick_prices)
+        btn_prices = ttk.Button(top, text="Качи Цени (.xls/.xlsx)", command=self.pick_multiple_prices)
         btn_merge = ttk.Button(top, text="Слей", command=self.do_merge)
         btn_save = ttk.Button(top, text="Запази като...", command=self.save_xlsx)
 
@@ -810,13 +822,103 @@ class App(tk.Tk):
         if path:
             self.order_path.set(path)
 
-    def pick_prices(self):
-        path = filedialog.askopenfilename(
-            title="Избери файл Цени",
-            filetypes=[("Excel", "*.xlsx"), ("Excel 97-2003", "*.xls"), ("All files", "*.*")]
-        )
-        if path:
-            self.prices_path.set(path)
+    def pick_multiple_prices(self):
+        """Open dialog to select multiple price files."""
+        popup = tk.Toplevel(self)
+        popup.title("Качи цени")
+        popup.geometry("600x500")
+        popup.transient(self)
+        popup.minsize(500, 400)
+        
+        price_files = list(self._multiple_prices_paths)  # Copy existing
+        
+        # Title
+        ttk.Label(popup, text="Качи файлове с цени", font=("", 14, "bold")).pack(pady=(15, 10))
+        ttk.Label(popup, text="Цените ще бъдат обединени в един ценоразпис").pack(pady=(0, 10))
+        
+        # Add files button
+        def add_files_dialog():
+            paths = filedialog.askopenfilenames(
+                title="Избери файлове с цени",
+                filetypes=[("Excel", "*.xlsx"), ("Excel 97-2003", "*.xls"), ("All files", "*.*")]
+            )
+            if paths:
+                for p in paths:
+                    p_str = str(p).strip()
+                    if p_str.lower().endswith(('.xls', '.xlsx')) and p_str not in price_files:
+                        price_files.append(p_str)
+                        files_listbox.insert(tk.END, Path(p_str).name)
+                update_label()
+        
+        add_btn = ttk.Button(popup, text="📂 Добави файлове...", command=add_files_dialog)
+        add_btn.pack(pady=10)
+        
+        # Files list label
+        ttk.Label(popup, text="Добавени ценови файлове:").pack(anchor="w", padx=20)
+        
+        # Listbox for files
+        list_frame = ttk.Frame(popup)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+        
+        files_listbox = tk.Listbox(list_frame, selectmode=tk.EXTENDED, height=8)
+        files_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=files_listbox.yview)
+        files_listbox.configure(yscrollcommand=files_scrollbar.set)
+        
+        files_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        files_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Load existing files into listbox
+        for p in price_files:
+            files_listbox.insert(tk.END, Path(p).name)
+        
+        # Status label
+        status_label = ttk.Label(popup, text="Няма добавени файлове", foreground="gray")
+        status_label.pack(pady=5)
+        
+        def update_label():
+            if price_files:
+                status_label.configure(text=f"{len(price_files)} файла добавени", foreground="green")
+            else:
+                status_label.configure(text="Няма добавени файлове", foreground="gray")
+        
+        update_label()
+        
+        # Action buttons for list management
+        btn_frame = ttk.Frame(popup)
+        btn_frame.pack(fill=tk.X, padx=20, pady=5)
+        
+        def remove_selected():
+            selected = list(files_listbox.curselection())
+            for i in reversed(selected):
+                files_listbox.delete(i)
+                del price_files[i]
+            update_label()
+        
+        def clear_all():
+            files_listbox.delete(0, tk.END)
+            price_files.clear()
+            update_label()
+        
+        ttk.Button(btn_frame, text="Премахни избраните", command=remove_selected).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Изчисти всички", command=clear_all).pack(side=tk.LEFT, padx=5)
+        
+        # Separator and bottom buttons - FIXED at bottom
+        ttk.Separator(popup, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=20, pady=10, side=tk.BOTTOM)
+        
+        bottom_frame = ttk.Frame(popup)
+        bottom_frame.pack(fill=tk.X, padx=20, pady=10, side=tk.BOTTOM)
+        
+        def do_confirm():
+            if not price_files:
+                messagebox.showwarning("Липсват файлове", "Добави поне един файл с цени.")
+                return
+            self._multiple_prices_paths = list(price_files)
+            self.prices_path.set(f"[{len(price_files)} файла]")
+            popup.destroy()
+            self.status.set(f"Заредени {len(price_files)} файла с цени")
+        
+        ttk.Button(bottom_frame, text="Отказ", command=popup.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(bottom_frame, text="Потвърди", command=do_confirm).pack(side=tk.RIGHT, padx=5)
 
     def choose_protocols_folder(self):
         path = filedialog.askdirectory(title="Избери папка за протоколи")
@@ -1240,13 +1342,40 @@ class App(tk.Tk):
             return
 
         try:
-            self.df_merged = merge_order_and_prices(op, pp)
+            # Check if we have multiple price files
+            if self._multiple_prices_paths:
+                # Merge multiple price files into one DataFrame
+                combined_prices = self._combine_price_files(self._multiple_prices_paths)
+                if combined_prices is None or combined_prices.empty:
+                    messagebox.showerror("Грешка", "Не успях да обединя ценовите файлове.")
+                    return
+                self.df_merged = merge_order_and_prices(op, combined_prices)
+            else:
+                self.df_merged = merge_order_and_prices(op, pp)
             self._current_file_path = None  # New merge, no file yet
             self._load_table(self.df_merged)
             self.status.set(f"Готово: {len(self.df_merged)} реда слети.")
         except Exception as e:
             messagebox.showerror("Грешка", str(e))
             self.status.set("Грешка при сливане.")
+
+    def _combine_price_files(self, price_paths):
+        """Combine multiple price files into a single DataFrame."""
+        dfs = []
+        for path in price_paths:
+            try:
+                df = read_excel_any(path)
+                dfs.append(df)
+            except Exception as e:
+                print(f"Грешка при четене на {path}: {e}")
+                continue
+        
+        if not dfs:
+            return None
+        
+        # Concatenate all dataframes
+        combined = pd.concat(dfs, ignore_index=True)
+        return combined
 
     def save_xlsx(self):
         if self.df_merged is None or self.df_merged.empty:
