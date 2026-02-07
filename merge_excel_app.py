@@ -227,14 +227,23 @@ def excel_cell_to_string(x) -> str:
 # -------------------------
 # NEW: price ranges like "1 000 - 1 999"
 # -------------------------
-def parse_qty_range_from_header(header: str):
+def parse_qty_range_from_header(header):
     """
     Extract (min,max) from headers like:
       "1 000 -1 999", "2 000 - 2 999", "1000-1999", "1 000 – 1 999"
+      Also handles single numbers like 50000 -> (50000, 59999)
     Returns (min,max) or None.
     """
     if header is None:
         return None
+    
+    # If header is already a number
+    if isinstance(header, (int, float)) and not pd.isna(header):
+        qty = int(header)
+        # Single number: treat as exact quantity with some range
+        # e.g., 50000 means 50000-59999, 60000 means 60000-79999, etc.
+        return (qty, qty)  # Will be handled specially in resolve_unit_price
+    
     s = str(header).replace("–", "-").replace("—", "-")
 
     # find numbers possibly containing spaces/dots/commas (thousand separators)
@@ -249,6 +258,9 @@ def parse_qty_range_from_header(header: str):
                 pass
     if len(nums) >= 2:
         return nums[0], nums[1]
+    elif len(nums) == 1:
+        # Single number in header text
+        return (nums[0], nums[0])
     return None
 
 
@@ -256,6 +268,7 @@ def detect_range_columns(df_prices: pd.DataFrame):
     """
     Finds range-price columns in prices sheet and returns:
       [(min_qty, max_qty, colname), ...] sorted by min_qty.
+    Also detects single-number columns like 50000, 60000.
     """
     ranges = []
     for c in df_prices.columns:
@@ -269,25 +282,51 @@ def detect_range_columns(df_prices: pd.DataFrame):
 def resolve_unit_price_from_ranges(qty: int, price_row: pd.Series, ranges):
     """
     Pick unit price by finding the column whose (min<=qty<=max).
+    For single-number columns, picks the closest one that doesn't exceed qty.
     If qty is above the last range, use the last range's price (fallback).
     If qty is below the first range, use the first range's price (fallback).
     """
     if not ranges:
         return None
 
+    # First, try exact range match
     for min_q, max_q, col in ranges:
         if min_q <= qty <= max_q:
-            return to_float(price_row.get(col))
+            price = to_float(price_row.get(col))
+            if price is not None:
+                return price
+
+    # For single-number columns (min==max), find the best match
+    # Pick the highest single-number column that is <= qty
+    single_cols = [(min_q, col) for min_q, max_q, col in ranges if min_q == max_q]
+    if single_cols:
+        # Sort by quantity descending
+        single_cols.sort(key=lambda x: x[0], reverse=True)
+        for threshold, col in single_cols:
+            if qty >= threshold:
+                price = to_float(price_row.get(col))
+                if price is not None:
+                    return price
 
     # fallback: qty above last range -> use last available price
     last_min, last_max, last_col = ranges[-1]
     if qty > last_max:
-        return to_float(price_row.get(last_col))
+        price = to_float(price_row.get(last_col))
+        if price is not None:
+            return price
 
     # qty below first range -> use first available price
     first_min, first_max, first_col = ranges[0]
     if qty < first_min:
-        return to_float(price_row.get(first_col))
+        price = to_float(price_row.get(first_col))
+        if price is not None:
+            return price
+    
+    # Try to find ANY non-null price in the ranges
+    for min_q, max_q, col in ranges:
+        price = to_float(price_row.get(col))
+        if price is not None:
+            return price
 
     return None
 
@@ -371,7 +410,18 @@ def merge_order_and_prices(order_path: str, prices_path: str) -> pd.DataFrame:
 
     # Build lookup: keep full row so we can read price from range columns
     # Use multiple keys for better matching: original, normalized, and canonical
+    # When there are multiple rows for the same article, keep the one with more filled prices
     prices_lookup = {}
+    
+    def count_filled_prices(row):
+        """Count how many price range columns have valid (non-NaN) values."""
+        count = 0
+        for _, _, col in range_cols:
+            val = row.get(col)
+            if not pd.isna(val):
+                count += 1
+        return count
+    
     for _, pr in df_prices.iterrows():
         name = pr.get(p_item)
         if pd.isna(name):
@@ -385,10 +435,20 @@ def merge_order_and_prices(order_path: str, prices_path: str) -> pd.DataFrame:
             "Размер": "" if p_size is None or pd.isna(pr.get(p_size)) else str(pr.get(p_size)).strip(),
             "Материал": "" if p_mat is None or pd.isna(pr.get(p_mat)) else str(pr.get(p_mat)).strip(),
         }
-        prices_lookup[name] = info
-        prices_lookup[name_norm] = info
-        if name_canon:
-            prices_lookup[name_canon] = info
+        
+        # Only update if this is a new key or if this row has more filled price columns
+        new_count = count_filled_prices(pr)
+        for key in [name, name_norm, name_canon]:
+            if key is None:
+                continue
+            existing = prices_lookup.get(key)
+            if existing is None:
+                prices_lookup[key] = info
+            else:
+                # Compare: keep the row with more filled prices
+                old_count = count_filled_prices(existing["row"])
+                if new_count > old_count:
+                    prices_lookup[key] = info
 
     if DEBUG:
         print(f"[DEBUG] Built prices_lookup with {len(prices_lookup)} keys. Sample keys: {list(prices_lookup.keys())[:6]}")
